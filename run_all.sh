@@ -62,13 +62,14 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 
 build_locust_runner() {
     if docker image inspect "$LOCUST_IMAGE" > /dev/null 2>&1; then
-        log "Locust runner image already exists, skipping build"
-        return 0
+        log "Rebuilding locust runner image (pulling latest changes)..."
+        docker build -t "$LOCUST_IMAGE" "$SCRIPT_DIR"
+        ok "Locust runner image rebuilt"
+    else
+        log "Building locust runner image..."
+        docker build -t "$LOCUST_IMAGE" "$SCRIPT_DIR"
+        ok "Locust runner image built"
     fi
-
-    log "Building locust runner image..."
-    docker build -t "$LOCUST_IMAGE" "$SCRIPT_DIR"
-    ok "Locust runner image built"
 }
 
 # ---------------------------------------------------------------------------
