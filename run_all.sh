@@ -111,16 +111,13 @@ extract_metrics() {
 # ---------------------------------------------------------------------------
 find_compose_file() {
     local project_dir="$1"
-    local names="docker-compose.yml docker-compose.yaml compose.yml compose.yaml"
-    for name in $names; do
-        local found
-        found="$(find "$project_dir" -maxdepth 3 -name "$name" -not -path '*/\.*' 2>/dev/null | head -1)"
-        if [ -n "$found" ]; then
-            echo "$found"
-            return 0
-        fi
-    done
-    return 1
+
+    find "$project_dir" \
+        -maxdepth 3 \
+        \( -name "docker-compose.yml" -o -name "docker-compose.yaml" -o -name "compose.yml" -o -name "compose.yaml" \) \
+        -not -path '*/.*' \
+        -print -quit \
+        2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -161,13 +158,12 @@ test_project() {
 
     # --- 0. Find docker compose file ---
     local compose_file
-    if ! compose_file="$(find_compose_file "$project_dir")"; then
+    compose_file="$(find_compose_file "$project_dir")"
+    if [ -z "$compose_file" ]; then
         fail "$name: no docker-compose.yml / compose.yml found in $project_dir"
         echo "$name,NO_COMPOSE_FILE,0,0,0,0" >> "$RESULTS_DIR/summary.csv"
         return 1
     fi
-    local compose_dir
-    compose_dir="$(dirname "$compose_file")"
     log "$name: using $compose_file"
 
     # --- 1. Build and start ---
