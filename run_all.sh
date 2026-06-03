@@ -110,14 +110,50 @@ extract_metrics() {
 # Find docker compose file anywhere inside project dir
 # ---------------------------------------------------------------------------
 find_compose_file() {
-    local project_dir="$1"
+    local dir="$1"
 
-    find "$project_dir" \
-        -maxdepth 3 \
-        \( -name "docker-compose.yml" -o -name "docker-compose.yaml" -o -name "compose.yml" -o -name "compose.yaml" \) \
+    [ -d "$dir" ] || {
+        warn "  Directory not found: $dir"
+        return 1
+    }
+
+    local found
+
+    # Strategy 1: find command (portable, handles any depth up to 4)
+    found="$(find "$dir" -maxdepth 4 \
+        \( -name 'docker-compose.yml' -o -name 'docker-compose.yaml' \
+           -o -name 'compose.yml' -o -name 'compose.yaml' \) \
         -not -path '*/.*' \
-        -print -quit \
-        2>/dev/null
+        2>/dev/null | head -n 1)" || true
+
+    if [ -n "$found" ]; then
+        echo "$found"
+        return 0
+    fi
+
+    # Strategy 2: bash glob fallback
+    local f
+    for f in \
+        "$dir"/docker-compose.yml "$dir"/docker-compose.yaml \
+        "$dir"/compose.yml "$dir"/compose.yaml \
+        "$dir"/*/docker-compose.yml "$dir"/*/docker-compose.yaml \
+        "$dir"/*/compose.yml "$dir"/*/compose.yaml \
+        "$dir"/*/*/docker-compose.yml "$dir"/*/*/docker-compose.yaml \
+        "$dir"/*/*/compose.yml "$dir"/*/*/compose.yaml \
+        "$dir"/*/*/*/docker-compose.yml "$dir"/*/*/*/docker-compose.yaml \
+        "$dir"/*/*/*/compose.yml "$dir"/*/*/*/compose.yaml; do
+        [ -f "$f" ] && { echo "$f"; return 0; }
+    done
+
+    # Debug: nothing found — show what's actually in the directory
+    warn "  No compose file found in: $dir"
+    warn "  Directory contents:"
+    ls -la "$dir" 2>/dev/null | while IFS= read -r line; do warn "    $line"; done
+    warn "  All YAML files (maxdepth 3):"
+    find "$dir" -maxdepth 3 \( -name '*.yml' -o -name '*.yaml' \) \
+        -not -path '*/.*' 2>/dev/null | while IFS= read -r line; do warn "    $line"; done
+
+    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -158,7 +194,7 @@ test_project() {
 
     # --- 0. Find docker compose file ---
     local compose_file
-    compose_file="$(find_compose_file "$project_dir")"
+    compose_file="$(find_compose_file "$project_dir" || true)"
     if [ -z "$compose_file" ]; then
         fail "$name: no docker-compose.yml / compose.yml found in $project_dir"
         echo "$name,NO_COMPOSE_FILE,0,0,0,0" >> "$RESULTS_DIR/summary.csv"
