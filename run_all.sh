@@ -107,6 +107,23 @@ extract_metrics() {
 }
 
 # ---------------------------------------------------------------------------
+# Find docker compose file anywhere inside project dir
+# ---------------------------------------------------------------------------
+find_compose_file() {
+    local project_dir="$1"
+    local names="docker-compose.yml docker-compose.yaml compose.yml compose.yaml"
+    for name in $names; do
+        local found
+        found="$(find "$project_dir" -maxdepth 3 -name "$name" -not -path '*/\.*' 2>/dev/null | head -1)"
+        if [ -n "$found" ]; then
+            echo "$found"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------
 # Wait for /health endpoint to respond 200
 # ---------------------------------------------------------------------------
 wait_for_health() {
@@ -142,9 +159,20 @@ test_project() {
     log "Project dir: $project_dir"
     log "=========================================="
 
+    # --- 0. Find docker compose file ---
+    local compose_file
+    if ! compose_file="$(find_compose_file "$project_dir")"; then
+        fail "$name: no docker-compose.yml / compose.yml found in $project_dir"
+        echo "$name,NO_COMPOSE_FILE,0,0,0,0" >> "$RESULTS_DIR/summary.csv"
+        return 1
+    fi
+    local compose_dir
+    compose_dir="$(dirname "$compose_file")"
+    log "$name: using $compose_file"
+
     # --- 1. Build and start ---
     log "Building and starting container..."
-    if ! docker compose -f "$project_dir/docker-compose.yml" up --build -d > "$result_dir/docker_build.log" 2>&1; then
+    if ! docker compose -f "$compose_file" up --build -d > "$result_dir/docker_build.log" 2>&1; then
         fail "$name: docker compose up failed (see $result_dir/docker_build.log)"
         return 1
     fi
@@ -153,8 +181,8 @@ test_project() {
     log "Waiting for /health (timeout ${HEALTH_TIMEOUT}s)..."
     if ! wait_for_health; then
         fail "$name: /health did not respond within ${HEALTH_TIMEOUT}s"
-        docker compose -f "$project_dir/docker-compose.yml" logs >> "$result_dir/docker_build.log" 2>&1
-        docker compose -f "$project_dir/docker-compose.yml" down -v --remove-orphans > /dev/null 2>&1
+        docker compose -f "$compose_file" logs >> "$result_dir/docker_build.log" 2>&1
+        docker compose -f "$compose_file" down -v --remove-orphans > /dev/null 2>&1
         return 1
     fi
     ok "$name: service is healthy"
@@ -192,7 +220,7 @@ test_project() {
 
     # --- 5. Stop container ---
     log "Stopping container..."
-    docker compose -f "$project_dir/docker-compose.yml" down -v --remove-orphans > /dev/null 2>&1
+    docker compose -f "$compose_file" down -v --remove-orphans > /dev/null 2>&1
     ok "$name: container stopped"
 }
 
