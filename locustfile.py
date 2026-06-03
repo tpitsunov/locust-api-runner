@@ -311,7 +311,6 @@ class _UserMixin:
             self._input_type = InputType(resp.json()["input_type"])
             logger.info("Service input_type: %s", self._input_type.value)
 
-    @task
     def run_service(self) -> None:
         _execute_run(self)
 
@@ -384,11 +383,19 @@ class ConstantUser(_UserMixin, HttpUser):
     """Steady load with moderate wait time. Default profile."""
     wait_time = between(0.5, 2.0)
 
+    @task
+    def run_service(self) -> None:
+        _execute_run(self)
+
 
 @_profile
 class HeavyUser(_UserMixin, HttpUser):
     """High-frequency requests — stress testing."""
     wait_time = between(0.1, 0.5)
+
+    @task
+    def run_service(self) -> None:
+        _execute_run(self)
 
 
 @_profile
