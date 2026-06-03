@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -e
+set -u
+set -o pipefail 2>/dev/null || true
 
 # ============================================================================
 # run_all.sh — Mass load testing of student projects
