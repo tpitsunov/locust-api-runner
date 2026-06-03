@@ -173,8 +173,10 @@ def _generate_image_bytes(
     draw = ImageDraw.Draw(img)
 
     for _ in range(random.randint(2, 6)):
-        x0, y0 = random.randint(0, width), random.randint(0, height)
-        x1, y1 = random.randint(0, width), random.randint(0, height)
+        x0 = random.randint(0, max(0, width - 1))
+        y0 = random.randint(0, max(0, height - 1))
+        x1 = random.randint(x0, width)
+        y1 = random.randint(y0, height)
         color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
         shape = random.choice(["rectangle", "ellipse"])
         if shape == "rectangle":
