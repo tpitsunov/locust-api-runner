@@ -348,7 +348,7 @@ def _execute_run(user: _UserMixin) -> None:
     payload = _build_run_payload(user._input_type)
 
     request_name = "/run [warmup]" if is_warmup else "/run"
-    resp = user.client.post(request_name, json=payload)
+    resp = user.client.post("/run", name=request_name, json=payload)
 
     _stats["total_requests"] += 1
     if is_warmup:
