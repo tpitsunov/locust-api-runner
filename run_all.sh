@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+if [ -z "${BASH_VERSION:-}" ]; then
+    echo "Error: this script requires bash. Run: bash run_all.sh" >&2
+    exit 1
+fi
 set -e
 set -u
 set -o pipefail 2>/dev/null || true
