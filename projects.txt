@@ -1,0 +1,7 @@
+# One project per line: <student_name> <path_to_project_dir>
+# Path can be absolute or relative to this script's location.
+#
+# Examples:
+# ivanov   ../students/ivanov-wb-analyzer
+# petrov   ../students/petrov-llm-chat
+# sidorov  /home/user/students/sidorov-vlm-classifier
