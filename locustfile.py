@@ -1,39 +1,3 @@
-"""
-Advanced Locust load-test file for serious performance testing.
-
-This file is INDEPENDENT — it does NOT import from the app package.
-It can be pointed at any host that implements the unified API schema.
-
-BACKWARD COMPATIBILITY:
-    The simple locustfile.py remains unchanged and fully functional.
-    Students use locustfile.py; this file is for advanced/instructor testing.
-
-USAGE:
-    locust -f locustfile_advanced.py --host http://localhost:8000
-
-FEATURES vs simple locustfile:
-    - Pre-generated image pool (no CPU overhead during test)
-    - Configurable payload sizes via environment variables
-    - Response validation (schema + status checking)
-    - Warmup phase (excluded from statistics)
-    - Multiple user profiles: constant, heavy, burst
-    - Custom metrics: error breakdown, payload size stats
-    - Full configuration through environment variables
-
-ENVIRONMENT VARIABLES:
-    LOCUST_HOST                    Target URL (default: http://localhost:8000)
-    LOAD_TEST_TEXT_MIN_LEN         Min random text length (default: 50)
-    LOAD_TEST_TEXT_MAX_LEN         Max random text length (default: 500)
-    LOAD_TEST_IMAGE_MIN_SIZE       Min image dimension (default: 64)
-    LOAD_TEST_IMAGE_MAX_SIZE       Max image dimension (default: 512)
-    LOAD_TEST_IMAGE_FORMAT         Image format: png, jpeg, webp (default: png)
-    LOAD_TEST_IMAGE_POOL_SIZE      Pre-generated images count (default: 10)
-    LOAD_TEST_VALIDATE             Validate responses: 1 or 0 (default: 1)
-    LOAD_TEST_WARMUP_REQUESTS      Warmup requests per user before measuring (default: 3)
-    LOAD_TEST_EXTRA_BODY           JSON string for extra_body (default: {})
-    LOAD_TEST_PROFILE              User profile: constant, heavy, burst (default: constant)
-    LOAD_TEST_LOG_DIR              Directory for log files (default: logs)
-"""
 from __future__ import annotations
 
 import base64
@@ -46,12 +10,8 @@ import time
 from datetime import datetime, timezone
 from enum import Enum
 
-from locust import HttpUser, between, events, task
+from locust import HttpUser, between, constant, events, task
 
-
-# ---------------------------------------------------------------------------
-# Logging setup — console + file
-# ---------------------------------------------------------------------------
 
 _LOG_DIR = os.environ.get("LOAD_TEST_LOG_DIR", "logs")
 os.makedirs(_LOG_DIR, exist_ok=True)
@@ -65,20 +25,10 @@ _file_handler.setFormatter(logging.Formatter(
     datefmt="%Y-%m-%d %H:%M:%S",
 ))
 
-logger = logging.getLogger("locustfile_advanced")
+logger = logging.getLogger("locust_runner")
 logger.setLevel(logging.DEBUG)
 logger.addHandler(_file_handler)
 
-
-# Also forward Locust's own logs to the file
-for _locust_logger_name in ("locust", "locust.stats", "locust.runners"):
-    _locust_logger = logging.getLogger(_locust_logger_name)
-    _locust_logger.addHandler(_file_handler)
-
-
-# ---------------------------------------------------------------------------
-# Configuration from environment
-# ---------------------------------------------------------------------------
 
 class Config:
     HOST = os.environ.get("LOCUST_HOST", "http://localhost:8000")
@@ -88,7 +38,6 @@ class Config:
     IMAGE_MAX_SIZE = int(os.environ.get("LOAD_TEST_IMAGE_MAX_SIZE", "512"))
     IMAGE_FORMAT = os.environ.get("LOAD_TEST_IMAGE_FORMAT", "png").lower()
     IMAGE_POOL_SIZE = int(os.environ.get("LOAD_TEST_IMAGE_POOL_SIZE", "10"))
-    VALIDATE = os.environ.get("LOAD_TEST_VALIDATE", "1") == "1"
     WARMUP_REQUESTS = int(os.environ.get("LOAD_TEST_WARMUP_REQUESTS", "3"))
     PROFILE = os.environ.get("LOAD_TEST_PROFILE", "constant").lower()
 
@@ -101,19 +50,11 @@ class Config:
         ) from exc
 
 
-# ---------------------------------------------------------------------------
-# Input type enum
-# ---------------------------------------------------------------------------
-
 class InputType(str, Enum):
     TEXT = "text"
     IMAGE = "image"
     TEXT_AND_IMAGE = "text_and_image"
 
-
-# ---------------------------------------------------------------------------
-# Data generation
-# ---------------------------------------------------------------------------
 
 RANDOM_SENTENCES = [
     "The quick brown fox jumps over the lazy dog.",
@@ -138,7 +79,6 @@ def _random_text(
     min_len: int | None = None,
     max_len: int | None = None,
 ) -> str:
-    """Generate random text of configurable length."""
     _min = min_len if min_len is not None else Config.TEXT_MIN_LEN
     _max = max_len if max_len is not None else Config.TEXT_MAX_LEN
     target_len = random.randint(_min, _max)
@@ -166,7 +106,6 @@ def _generate_image_bytes(
     height: int,
     fmt: str = Config.IMAGE_FORMAT,
 ) -> bytes:
-    """Generate a random image as raw bytes."""
     from PIL import Image, ImageDraw
 
     img = Image.new("RGB", (width, height))
@@ -195,11 +134,8 @@ def _image_to_base64(image_bytes: bytes) -> str:
 
 
 class ImagePool:
-    """Pre-generated pool of images to avoid CPU overhead during test."""
-
     def __init__(self, pool_size: int = Config.IMAGE_POOL_SIZE) -> None:
         self._images: list[str] = []
-        self._sizes: list[tuple[int, int]] = []
         self._generate(pool_size)
 
     def _generate(self, count: int) -> None:
@@ -209,7 +145,6 @@ class ImagePool:
             h = random.randint(Config.IMAGE_MIN_SIZE, Config.IMAGE_MAX_SIZE)
             img_bytes = _generate_image_bytes(w, h)
             self._images.append(_image_to_base64(img_bytes))
-            self._sizes.append((w, h))
         logger.info("Image pool ready (%d images)", count)
 
     def random_image(self) -> str:
@@ -219,81 +154,44 @@ class ImagePool:
 image_pool = ImagePool()
 
 
-# ---------------------------------------------------------------------------
-# Response validation
-# ---------------------------------------------------------------------------
-
-def _validate_run_response(data: dict) -> list[str]:
-    """Validate /run response. Only checks that response is usable."""
-    issues: list[str] = []
-
-    if not isinstance(data, dict):
-        issues.append(f"response is not a JSON object: {type(data).__name__}")
-        return issues
-
-    return issues
-
-
-# ---------------------------------------------------------------------------
-# Custom metrics via Locust events
-# ---------------------------------------------------------------------------
-
-_stats: dict[str, int | float | None] = {
-    "validation_failures": 0,
-    "warmup_requests": 0,
-    "total_requests": 0,
-    "start_time": None,
-}
+_warmup_count: int = 0
 
 
 @events.test_start.add_listener
-def on_test_start(**kwargs: Any) -> None:
-    _stats["start_time"] = time.time()
-    _stats["validation_failures"] = 0
-    _stats["warmup_requests"] = 0
-    _stats["total_requests"] = 0
+def on_test_start(environment, **kwargs):
+    global _warmup_count
+    _warmup_count = 0
     logger.info("=" * 70)
     logger.info("LOAD TEST STARTED")
     logger.info("=" * 70)
-    logger.info("Log file: %s", os.path.abspath(_LOG_PATH))
     logger.info("Configuration:")
     logger.info("  HOST            = %s", Config.HOST)
     logger.info("  PROFILE         = %s", Config.PROFILE)
-    logger.info("  VALIDATE        = %s", Config.VALIDATE)
     logger.info("  WARMUP_REQUESTS = %d", Config.WARMUP_REQUESTS)
     logger.info("  TEXT_LEN        = %d..%d", Config.TEXT_MIN_LEN, Config.TEXT_MAX_LEN)
     logger.info("  IMAGE_SIZE      = %d..%d", Config.IMAGE_MIN_SIZE, Config.IMAGE_MAX_SIZE)
-    logger.info("  IMAGE_FORMAT    = %s", Config.IMAGE_FORMAT)
     logger.info("  IMAGE_POOL_SIZE = %d", Config.IMAGE_POOL_SIZE)
     logger.info("  EXTRA_BODY      = %s", json.dumps(Config.EXTRA_BODY))
     logger.info("=" * 70)
 
 
 @events.test_stop.add_listener
-def on_test_stop(**kwargs: Any) -> None:
-    elapsed = time.time() - _stats["start_time"] if _stats["start_time"] else 0
-    rps = _stats["total_requests"] / elapsed if elapsed > 0 else 0
+def on_test_stop(environment, **kwargs):
+    total = environment.stats.total
     logger.info("=" * 70)
     logger.info("LOAD TEST FINISHED")
     logger.info("=" * 70)
     logger.info("Summary:")
-    logger.info("  Total requests          = %d", _stats["total_requests"])
-    logger.info("  Warmup requests         = %d", _stats["warmup_requests"])
-    logger.info("  Measured requests       = %d", _stats["total_requests"] - _stats["warmup_requests"])
-    logger.info("  Validation failures     = %d", _stats["validation_failures"])
-    logger.info("  Elapsed                 = %.1fs", elapsed)
-    logger.info("  Requests/sec            = %.1f", rps)
+    logger.info("  Total requests          = %d", total.num_requests)
+    logger.info("  HTTP errors             = %d", total.num_failures)
+    logger.info("  Warmup requests         = %d", _warmup_count)
+    logger.info("  Median response time    = %d ms", int(total.median_response_time))
+    logger.info("  Average response time   = %d ms", int(total.avg_response_time))
+    logger.info("  Requests/sec            = %.1f", environment.stats.total_rps)
     logger.info("=" * 70)
-    logger.info("Full log: %s", os.path.abspath(_LOG_PATH))
 
-
-# ---------------------------------------------------------------------------
-# Shared user logic
-# ---------------------------------------------------------------------------
 
 class _UserMixin:
-    """Shared state and methods for all user profiles."""
-
     _input_type: InputType = InputType.TEXT
     _warmup_remaining: int = Config.WARMUP_REQUESTS
 
@@ -301,8 +199,11 @@ class _UserMixin:
         self._warmup_remaining = Config.WARMUP_REQUESTS
         resp = self.client.get("/info", name="/info [discovery]")
         if resp.status_code == 200:
-            self._input_type = InputType(resp.json()["input_type"])
-            logger.info("Service input_type: %s", self._input_type.value)
+            try:
+                self._input_type = InputType(resp.json()["input_type"])
+                logger.info("Service input_type: %s", self._input_type.value)
+            except (KeyError, ValueError):
+                logger.info("Could not parse /info, using default: text")
 
     def run_service(self) -> None:
         _execute_run(self)
@@ -334,34 +235,18 @@ def _build_run_payload(input_type: InputType) -> dict:
 
 
 def _execute_run(user: _UserMixin) -> None:
+    global _warmup_count
+
     is_warmup = user._warmup_remaining > 0
     if is_warmup:
         user._warmup_remaining -= 1
+        _warmup_count += 1
 
     payload = _build_run_payload(user._input_type)
 
     request_name = "/run [warmup]" if is_warmup else "/run"
-    resp = user.client.post("/run", name=request_name, json=payload)
+    user.client.post("/run", name=request_name, json=payload)
 
-    _stats["total_requests"] += 1
-    if is_warmup:
-        _stats["warmup_requests"] += 1
-
-    if Config.VALIDATE:
-        if resp.status_code >= 400:
-            _stats["validation_failures"] += 1
-            logger.warning("HTTP %d for /run", resp.status_code)
-        elif resp.status_code == 200:
-            try:
-                resp.json()
-            except json.JSONDecodeError:
-                _stats["validation_failures"] += 1
-                logger.warning("Response is not valid JSON")
-
-
-# ---------------------------------------------------------------------------
-# User profiles — only the selected profile is active
-# ---------------------------------------------------------------------------
 
 _PROFILE_MAP: dict[str, type] = {}
 
@@ -373,8 +258,7 @@ def _profile(cls: type) -> type:
 
 @_profile
 class ConstantUser(_UserMixin, HttpUser):
-    """Steady load with moderate wait time. Default profile."""
-    wait_time = between(0.5, 2.0)
+    wait_time = constant(0)
 
     @task
     def run_service(self) -> None:
@@ -383,8 +267,7 @@ class ConstantUser(_UserMixin, HttpUser):
 
 @_profile
 class HeavyUser(_UserMixin, HttpUser):
-    """High-frequency requests — stress testing."""
-    wait_time = between(0.1, 0.5)
+    wait_time = constant(0)
 
     @task
     def run_service(self) -> None:
@@ -393,7 +276,6 @@ class HeavyUser(_UserMixin, HttpUser):
 
 @_profile
 class BurstUser(_UserMixin, HttpUser):
-    """Burst of BURST_SIZE requests, then pause — batch processing."""
     wait_time = between(2.0, 5.0)
     BURST_SIZE = 5
 
@@ -403,7 +285,6 @@ class BurstUser(_UserMixin, HttpUser):
             _execute_run(self)
 
 
-# Disable all profiles except the selected one
 _ACTIVE_PROFILE = Config.PROFILE
 for _name, _cls in _PROFILE_MAP.items():
     if _name != _ACTIVE_PROFILE:

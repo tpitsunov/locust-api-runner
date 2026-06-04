@@ -80,7 +80,7 @@ build_locust_runner() {
 
 # ---------------------------------------------------------------------------
 # Parse locust log file and extract metrics into CSV row
-# Format: name,status,total_requests,rps,validation_failures,elapsed_s
+# Format: name,status,total_requests,rps,http_errors,median_ms,avg_ms
 # ---------------------------------------------------------------------------
 extract_metrics() {
     local logdir="$1"
@@ -90,30 +90,28 @@ extract_metrics() {
     log_file="$(ls -t "$logdir"/load_test_*.log 2>/dev/null | head -1)"
 
     if [ -z "$log_file" ]; then
-        echo "$name,BUILD_FAILED,0,0,0,0"
+        echo "$name,BUILD_FAILED,0,0,0,0,0"
         return
     fi
 
     if grep -q "LOAD TEST FINISHED" "$log_file"; then
-        local total failures elapsed rps
+        local total errors rps median avg
 
         total="$(grep 'Total requests' "$log_file" | grep -oE '[0-9]+' | head -1)"
-        failures="$(grep 'Validation failures' "$log_file" | grep -oE '[0-9]+' | head -1)"
-        elapsed="$(grep 'Elapsed' "$log_file" | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+        errors="$(grep 'HTTP errors' "$log_file" | grep -oE '[0-9]+' | head -1)"
+        rps="$(grep 'Requests/sec' "$log_file" | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+        median="$(grep 'Median response time' "$log_file" | grep -oE '[0-9]+' | head -1)"
+        avg="$(grep 'Average response time' "$log_file" | grep -oE '[0-9]+' | head -1)"
 
         total="${total:-0}"
-        failures="${failures:-0}"
-        elapsed="${elapsed:-0}"
+        errors="${errors:-0}"
+        rps="${rps:-0}"
+        median="${median:-0}"
+        avg="${avg:-0}"
 
-        if [ "$elapsed" != "0" ] && [ "$total" != "0" ]; then
-            rps="$(awk "BEGIN {printf \"%.1f\", $total / $elapsed}")"
-        else
-            rps="0"
-        fi
-
-        echo "$name,SUCCESS,$total,$rps,$failures,$elapsed"
+        echo "$name,SUCCESS,$total,$rps,$errors,$median,$avg"
     else
-        echo "$name,TEST_INCOMPLETE,0,0,0,0"
+        echo "$name,TEST_INCOMPLETE,0,0,0,0,0"
     fi
 }
 
@@ -293,7 +291,7 @@ log "Settings: users=$USERS spawn_rate=$SPAWN_RATE run_time=$RUN_TIME profile=$P
 echo ""
 
 # Summary CSV header
-echo "name,status,total_requests,rps,validation_failures,elapsed_s" > "$RESULTS_DIR/summary.csv"
+echo "name,status,total_requests,rps,http_errors,median_ms,avg_ms" > "$RESULTS_DIR/summary.csv"
 
 failed=0
 total=${#lines[@]}
@@ -312,7 +310,7 @@ for line in "${lines[@]}"; do
 
     if [ ! -d "$project_dir" ]; then
         fail "[$current/$total] $name: directory not found: $project_dir"
-        echo "$name,DIR_NOT_FOUND,0,0,0,0" >> "$RESULTS_DIR/summary.csv"
+        echo "$name,DIR_NOT_FOUND,0,0,0,0,0" >> "$RESULTS_DIR/summary.csv"
         failed=$((failed + 1))
         continue
     fi
@@ -322,7 +320,7 @@ for line in "${lines[@]}"; do
     if test_project "$name" "$project_dir"; then
         extract_metrics "$RESULTS_DIR/$name" "$name" >> "$RESULTS_DIR/summary.csv"
     else
-        echo "$name,TEST_FAILED,0,0,0,0" >> "$RESULTS_DIR/summary.csv"
+        echo "$name,TEST_FAILED,0,0,0,0,0" >> "$RESULTS_DIR/summary.csv"
         failed=$((failed + 1))
     fi
 
@@ -336,12 +334,12 @@ log "=========================================="
 log "Results: $RESULTS_DIR"
 log "Summary: $RESULTS_DIR/summary.csv"
 echo ""
-echo "Name                | Status      | Requests | RPS   | Failures | Time"
-echo "--------------------|-------------|----------|-------|----------|------"
+echo "Name                | Status      | Requests | RPS   | Errors | Median | Avg"
+echo "--------------------|-------------|----------|-------|--------|--------|------"
 
-tail -n +2 "$RESULTS_DIR/summary.csv" | while IFS=, read -r name status total rps failures elapsed; do
-    printf "%-19s | %-11s | %8s | %5s | %8s | %ss\n" \
-        "$name" "$status" "$total" "$rps" "$failures" "$elapsed"
+tail -n +2 "$RESULTS_DIR/summary.csv" | while IFS=, read -r name status total rps errors median avg; do
+    printf "%-19s | %-11s | %8s | %5s | %6s | %4sms | %3sms\n" \
+        "$name" "$status" "$total" "$rps" "$errors" "$median" "$avg"
 done
 
 echo ""
