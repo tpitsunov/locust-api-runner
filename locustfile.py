@@ -157,10 +157,14 @@ image_pool = ImagePool()
 _warmup_count: int = 0
 
 
+_start_time: float = 0.0
+
+
 @events.test_start.add_listener
 def on_test_start(environment, **kwargs):
-    global _warmup_count
+    global _warmup_count, _start_time
     _warmup_count = 0
+    _start_time = time.time()
     logger.info("=" * 70)
     logger.info("LOAD TEST STARTED")
     logger.info("=" * 70)
@@ -178,6 +182,8 @@ def on_test_start(environment, **kwargs):
 @events.test_stop.add_listener
 def on_test_stop(environment, **kwargs):
     total = environment.stats.total
+    elapsed = time.time() - _start_time if _start_time else 1
+    rps = total.num_requests / elapsed if elapsed > 0 else 0
     logger.info("=" * 70)
     logger.info("LOAD TEST FINISHED")
     logger.info("=" * 70)
@@ -187,7 +193,7 @@ def on_test_stop(environment, **kwargs):
     logger.info("  Warmup requests         = %d", _warmup_count)
     logger.info("  Median response time    = %d ms", int(total.median_response_time))
     logger.info("  Average response time   = %d ms", int(total.avg_response_time))
-    logger.info("  Requests/sec            = %.1f", environment.stats.total_rps)
+    logger.info("  Requests/sec            = %.1f", rps)
     logger.info("=" * 70)
 
 
