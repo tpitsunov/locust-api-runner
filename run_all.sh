@@ -31,13 +31,13 @@ set -o pipefail 2>/dev/null || true
 # Results:
 #   locust-runner/results/
 #   ├── ivanov/
-#   │   ├── load_test_<ts>.log    — full locustfile log
-#   │   ├── locust_stdout.log     — Locust stdout (stats table)
-#   │   ├── info.json             — /info response
-#   │   └── docker_build.log      — build logs (on failure)
+#   │   ├── stats_stats.csv      — Locust CSV stats
+#   │   ├── locust_stdout.log    — Locust stdout
+#   │   ├── info.json            — /info response
+#   │   └── docker_build.log     — build logs (on failure)
 #   ├── petrov/
 #   │   └── ...
-#   └── summary.csv               — summary across all projects
+#   └── summary.csv              — summary across all projects
 # ============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -48,7 +48,6 @@ LOCUST_IMAGE="locust-runner"
 USERS="${LOAD_TEST_USERS:-20}"
 SPAWN_RATE="${LOAD_TEST_SPAWN_RATE:-2}"
 RUN_TIME="${LOAD_TEST_RUN_TIME:-60s}"
-PROFILE="${LOAD_TEST_PROFILE:-constant}"
 HEALTH_TIMEOUT="${LOAD_TEST_HEALTH_TIMEOUT:-120}"
 
 # ---------------------------------------------------------------------------
@@ -67,52 +66,9 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 # ---------------------------------------------------------------------------
 
 build_locust_runner() {
-    if docker image inspect "$LOCUST_IMAGE" > /dev/null 2>&1; then
-        log "Rebuilding locust runner image (pulling latest changes)..."
-        docker build -t "$LOCUST_IMAGE" "$SCRIPT_DIR"
-        ok "Locust runner image rebuilt"
-    else
-        log "Building locust runner image..."
-        docker build -t "$LOCUST_IMAGE" "$SCRIPT_DIR"
-        ok "Locust runner image built"
-    fi
-}
-
-# ---------------------------------------------------------------------------
-# Parse locust log file and extract metrics into CSV row
-# Format: name,status,total_requests,rps,http_errors,median_ms,avg_ms
-# ---------------------------------------------------------------------------
-extract_metrics() {
-    local logdir="$1"
-    local name="$2"
-
-    local log_file
-    log_file="$(ls -t "$logdir"/load_test_*.log 2>/dev/null | head -1)"
-
-    if [ -z "$log_file" ]; then
-        echo "$name,BUILD_FAILED,0,0,0,0,0"
-        return
-    fi
-
-    if grep -q "LOAD TEST FINISHED" "$log_file"; then
-        local total errors rps median avg
-
-        total="$(grep 'Total requests' "$log_file" | grep -oE '[0-9]+' | head -1)"
-        errors="$(grep 'HTTP errors' "$log_file" | grep -oE '[0-9]+' | head -1)"
-        rps="$(grep 'Requests/sec' "$log_file" | grep -oE '[0-9]+\.[0-9]+' | head -1)"
-        median="$(grep 'Median response time' "$log_file" | grep -oE '[0-9]+' | head -1)"
-        avg="$(grep 'Average response time' "$log_file" | grep -oE '[0-9]+' | head -1)"
-
-        total="${total:-0}"
-        errors="${errors:-0}"
-        rps="${rps:-0}"
-        median="${median:-0}"
-        avg="${avg:-0}"
-
-        echo "$name,SUCCESS,$total,$rps,$errors,$median,$avg"
-    else
-        echo "$name,TEST_INCOMPLETE,0,0,0,0,0"
-    fi
+    log "Building locust runner image..."
+    docker build -t "$LOCUST_IMAGE" "$SCRIPT_DIR"
+    ok "Locust runner image built"
 }
 
 # ---------------------------------------------------------------------------
@@ -128,7 +84,6 @@ find_compose_file() {
 
     local found
 
-    # Strategy 1: find command (portable, handles any depth up to 4)
     found="$(find "$dir" -maxdepth 4 \
         \( -name 'docker-compose.yml' -o -name 'docker-compose.yaml' \
            -o -name 'compose.yml' -o -name 'compose.yaml' \) \
@@ -140,7 +95,6 @@ find_compose_file() {
         return 0
     fi
 
-    # Strategy 2: bash glob fallback
     local f
     for f in \
         "$dir"/docker-compose.yml "$dir"/docker-compose.yaml \
@@ -154,13 +108,38 @@ find_compose_file() {
         [ -f "$f" ] && { echo "$f"; return 0; }
     done
 
-    # Debug: nothing found — show what's actually in the directory
     warn "  No compose file found in: $dir"
     warn "  Directory contents:"
     ls -la "$dir" 2>/dev/null | while IFS= read -r line; do warn "    $line"; done
     warn "  All YAML files (maxdepth 3):"
     find "$dir" -maxdepth 3 \( -name '*.yml' -o -name '*.yaml' \) \
         -not -path '*/.*' 2>/dev/null | while IFS= read -r line; do warn "    $line"; done
+
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# Find student's locustfile.py in project dir
+# ---------------------------------------------------------------------------
+find_locustfile() {
+    local dir="$1"
+
+    [ -d "$dir" ] || return 1
+
+    local found
+
+    found="$(find "$dir" -maxdepth 4 \
+        -name 'locustfile.py' \
+        -not -path '*/.*' \
+        -not -path '*/venv/*' \
+        -not -path '*/.venv/*' \
+        -not -path '*/node_modules/*' \
+        2>/dev/null | head -n 1)" || true
+
+    if [ -n "$found" ]; then
+        echo "$found"
+        return 0
+    fi
 
     return 1
 }
@@ -187,6 +166,46 @@ wait_for_health() {
 }
 
 # ---------------------------------------------------------------------------
+# Parse Locust CSV stats and extract metrics into CSV row
+# Format: name,status,total_requests,rps,http_errors,median_ms,avg_ms
+# ---------------------------------------------------------------------------
+extract_metrics() {
+    local logdir="$1"
+    local name="$2"
+
+    local csv_file="$logdir/stats_stats.csv"
+
+    if [ ! -f "$csv_file" ]; then
+        echo "$name,TEST_INCOMPLETE,0,0,0,0,0"
+        return
+    fi
+
+    local agg_line
+    agg_line="$(grep 'Aggregated' "$csv_file" | tail -1)" || true
+
+    if [ -z "$agg_line" ]; then
+        echo "$name,TEST_INCOMPLETE,0,0,0,0,0"
+        return
+    fi
+
+    local total errors median avg rps
+
+    total="$(echo "$agg_line" | awk -F',' '{print $3}')"
+    errors="$(echo "$agg_line" | awk -F',' '{print $4}')"
+    median="$(echo "$agg_line" | awk -F',' '{print $5}')"
+    avg="$(echo "$agg_line" | awk -F',' '{print $6}')"
+    rps="$(echo "$agg_line" | awk -F',' '{print $10}')"
+
+    total="${total:-0}"
+    errors="${errors:-0}"
+    median="${median:-0}"
+    avg="${avg:-0}"
+    rps="${rps:-0}"
+
+    echo "$name,SUCCESS,$total,$rps,$errors,$median,$avg"
+}
+
+# ---------------------------------------------------------------------------
 # Test a single project
 # ---------------------------------------------------------------------------
 test_project() {
@@ -206,10 +225,10 @@ test_project() {
     compose_file="$(find_compose_file "$project_dir" || true)"
     if [ -z "$compose_file" ]; then
         fail "$name: no docker-compose.yml / compose.yml found in $project_dir"
-        echo "$name,NO_COMPOSE_FILE,0,0,0,0" >> "$RESULTS_DIR/summary.csv"
+        echo "$name,NO_COMPOSE_FILE,0,0,0,0,0" >> "$RESULTS_DIR/summary.csv"
         return 1
     fi
-    log "$name: using $compose_file"
+    log "$name: compose $compose_file"
 
     # --- 1. Build and start ---
     log "Building and starting container..."
@@ -234,22 +253,33 @@ test_project() {
     log "$name: /info -> $info_response"
     echo "$info_response" > "$result_dir/info.json"
 
-    # --- 4. Run locust ---
-    log "Running load test (users=$USERS, spawn_rate=$SPAWN_RATE, time=$RUN_TIME, profile=$PROFILE)..."
+    # --- 4. Find student's locustfile ---
+    local student_locustfile
+    student_locustfile="$(find_locustfile "$project_dir" || true)"
+
+    local mount_locustfile=""
+    if [ -n "$student_locustfile" ]; then
+        log "$name: using student locustfile: $student_locustfile"
+        mount_locustfile="-v $student_locustfile:/locust/locustfile.py:ro"
+    else
+        warn "$name: no locustfile.py found, using built-in fallback"
+    fi
+
+    # --- 5. Run locust ---
+    log "Running load test (users=$USERS, spawn_rate=$SPAWN_RATE, time=$RUN_TIME)..."
 
     docker run --rm \
         --network host \
         -e LOCUST_HOST=http://localhost:8000 \
-        -e LOAD_TEST_PROFILE="$PROFILE" \
-        -e LOAD_TEST_VALIDATE=1 \
-        -e LOAD_TEST_WARMUP_REQUESTS=3 \
-        -e LOAD_TEST_LOG_DIR=/locust/logs \
-        -v "$result_dir":/locust/logs \
+        -v "$result_dir":/locust/results \
+        $mount_locustfile \
         "$LOCUST_IMAGE" \
+        -f /locust/locustfile.py \
         --headless \
         --users "$USERS" \
         --spawn-rate "$SPAWN_RATE" \
         --run-time "$RUN_TIME" \
+        --csv=/locust/results/stats \
         > "$result_dir/locust_stdout.log" 2>&1
 
     local locust_exit=$?
@@ -259,7 +289,7 @@ test_project() {
         ok "$name: load test completed"
     fi
 
-    # --- 5. Stop container ---
+    # --- 6. Stop container ---
     log "Stopping container..."
     docker compose -f "$compose_file" down -v --remove-orphans > /dev/null 2>&1
     ok "$name: container stopped"
@@ -287,7 +317,7 @@ if [ ${#lines[@]} -eq 0 ]; then
 fi
 
 log "Found ${#lines[@]} projects to test"
-log "Settings: users=$USERS spawn_rate=$SPAWN_RATE run_time=$RUN_TIME profile=$PROFILE"
+log "Settings: users=$USERS spawn_rate=$SPAWN_RATE run_time=$RUN_TIME"
 echo ""
 
 # Summary CSV header
