@@ -95,17 +95,21 @@ extract_metrics() {
     fi
 
     if grep -q "LOAD TEST FINISHED" "$log_file"; then
-        local total rps failures elapsed
+        local total failures elapsed rps
 
         total="$(grep 'Total requests' "$log_file" | grep -oE '[0-9]+' | head -1)"
-        rps="$(grep 'Requests/sec' "$log_file" | grep -oE '[0-9]+\.[0-9]+' | head -1)"
         failures="$(grep 'Validation failures' "$log_file" | grep -oE '[0-9]+' | head -1)"
         elapsed="$(grep 'Elapsed' "$log_file" | grep -oE '[0-9]+\.[0-9]+' | head -1)"
 
         total="${total:-0}"
-        rps="${rps:-0}"
         failures="${failures:-0}"
         elapsed="${elapsed:-0}"
+
+        if [ "$elapsed" != "0" ] && [ "$total" != "0" ]; then
+            rps="$(awk "BEGIN {printf \"%.1f\", $total / $elapsed}")"
+        else
+            rps="0"
+        fi
 
         echo "$name,SUCCESS,$total,$rps,$failures,$elapsed"
     else

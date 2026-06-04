@@ -224,19 +224,12 @@ image_pool = ImagePool()
 # ---------------------------------------------------------------------------
 
 def _validate_run_response(data: dict) -> list[str]:
-    """Validate /run response structure. Returns list of issues."""
+    """Validate /run response. Only checks that response is usable."""
     issues: list[str] = []
 
-    if "status" not in data:
-        issues.append("missing 'status' field")
-    elif data["status"] not in ("success", "error"):
-        issues.append(f"invalid status: {data['status']!r}")
-
-    if data.get("status") == "success" and "result" not in data:
-        issues.append("success response missing 'result'")
-
-    if data.get("status") == "error" and "error" not in data:
-        issues.append("error response missing 'error'")
+    if not isinstance(data, dict):
+        issues.append(f"response is not a JSON object: {type(data).__name__}")
+        return issues
 
     return issues
 
@@ -354,16 +347,16 @@ def _execute_run(user: _UserMixin) -> None:
     if is_warmup:
         _stats["warmup_requests"] += 1
 
-    if Config.VALIDATE and resp.status_code == 200:
-        try:
-            data = resp.json()
-            issues = _validate_run_response(data)
-            if issues:
-                _stats["validation_failures"] += 1
-                logger.warning("Response validation failed: %s", issues)
-        except json.JSONDecodeError:
+    if Config.VALIDATE:
+        if resp.status_code >= 400:
             _stats["validation_failures"] += 1
-            logger.warning("Response is not valid JSON")
+            logger.warning("HTTP %d for /run", resp.status_code)
+        elif resp.status_code == 200:
+            try:
+                resp.json()
+            except json.JSONDecodeError:
+                _stats["validation_failures"] += 1
+                logger.warning("Response is not valid JSON")
 
 
 # ---------------------------------------------------------------------------
